@@ -182,6 +182,11 @@ function startCrop() {
   canvas.addEventListener("mousedown", beginCrop);
   canvas.addEventListener("mousemove", previewCrop);
   canvas.addEventListener("mouseup", endCrop);
+
+  // Touch event support for mobile
+  canvas.addEventListener("touchstart", beginCropTouch);
+  canvas.addEventListener("touchmove", previewCropTouch);
+  canvas.addEventListener("touchend", endCropTouch);
 }
 
 function beginCrop(e) {
@@ -317,10 +322,96 @@ function cancelCrop() {
   canvas.removeEventListener("mousedown", beginCrop);
   canvas.removeEventListener("mousemove", previewCrop);
   canvas.removeEventListener("mouseup", endCrop);
+  // Remove touch event listeners for crop
+  canvas.removeEventListener("touchstart", beginCropTouch);
+  canvas.removeEventListener("touchmove", previewCropTouch);
+  canvas.removeEventListener("touchend", endCropTouch);
 
   // Redraw original image and clear overlays
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+}
+// --- Touch Crop Event Functions ---
+function getTouchPosition(touchEvent) {
+  const rect = canvas.getBoundingClientRect();
+  const touch = touchEvent.touches[0] || touchEvent.changedTouches[0];
+  return {
+    x: touch.clientX - rect.left,
+    y: touch.clientY - rect.top
+  };
+}
+
+function beginCropTouch(e) {
+  e.preventDefault();
+  const pos = getTouchPosition(e);
+  startX = pos.x;
+  startY = pos.y;
+  isCropping = true;
+  cropBox = null;
+}
+
+function previewCropTouch(e) {
+  if (!isCropping) return;
+  e.preventDefault();
+  const pos = getTouchPosition(e);
+  const scaleX = canvas.width / canvas.getBoundingClientRect().width;
+  const scaleY = canvas.height / canvas.getBoundingClientRect().height;
+
+  const currentX = pos.x * scaleX;
+  const currentY = pos.y * scaleY;
+
+  let x = Math.min(startX, currentX);
+  let y = Math.min(startY, currentY) + 30;
+  let width = Math.abs(currentX - startX);
+  let height = Math.abs(currentY - startY);
+
+  const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
+  const maxX = offsetX + drawWidth;
+  const maxY = offsetY + drawHeight;
+
+  x = clamp(x, offsetX, maxX);
+  y = clamp(y, offsetY, maxY);
+  width = clamp(x + width, offsetX, maxX) - x;
+  height = clamp(y + height, offsetY, maxY) - y;
+
+  cropBox = { x, y, width, height };
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+
+  ctx.save();
+  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+  ctx.beginPath();
+  ctx.rect(0, 0, canvas.width, canvas.height);
+  ctx.rect(cropBox.x, cropBox.y, cropBox.width, cropBox.height);
+  ctx.fill("evenodd");
+  ctx.restore();
+
+  ctx.strokeStyle = "white";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cropBox.x, cropBox.y, cropBox.width, cropBox.height);
+
+  const stepX = cropBox.width / 3;
+  const stepY = cropBox.height / 3;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 3; i++) {
+    ctx.beginPath();
+    ctx.moveTo(cropBox.x + i * stepX, cropBox.y);
+    ctx.lineTo(cropBox.x + i * stepX, cropBox.y + cropBox.height);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cropBox.x, cropBox.y + i * stepY);
+    ctx.lineTo(cropBox.x + cropBox.width, cropBox.y + i * stepY);
+    ctx.stroke();
+  }
+}
+
+function endCropTouch(e) {
+  e.preventDefault();
+  if (!cropBox || !isCropping) return;
+  endCrop(e.changedTouches[0]);
 }
 
 function cropAspect(ratio) {

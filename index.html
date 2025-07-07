@@ -1,0 +1,723 @@
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+
+<div id="av-wrapper">
+
+  <div class="app-container">
+    <div class="toolbar top-toolbar">
+      <button onclick="undo()">Undo</button>
+    </div>
+
+    <div class="toolbar action-toolbar">
+      <button onclick="startCrop()">Crop</button>
+      <button onclick="downloadImage()">Download</button>
+    </div>
+  
+    <div class="canvas-container">
+      <canvas id="canvas"></canvas>
+      <input type="file" id="upload" accept="image/*" />
+    </div>
+  
+
+  
+    <div class="toolbar preset-toolbar">
+      <button onclick="applyAspectRatio('story')">Story (9:16)</button>
+      <button onclick="applyAspectRatio('square')">Square (1:1)</button>
+      <button onclick="applyAspectRatio('post')">Post (4:5)</button>
+      <button onclick="applyAspectRatio('landscape')">Thumbnail (16:9)</button>
+    </div>
+  </div>  
+
+</div>
+
+
+<!-- Script -->
+<script>
+const bgMusic = new Audio("background.mp3");
+bgMusic.loop = true;
+bgMusic.volume = 0.55;
+
+const audioInstruction = new Audio("audio_instruction.mp3");
+audioInstruction.volume = 1;
+audioInstruction.loop = true;
+
+window.addEventListener("DOMContentLoaded", () => {
+  bgMusic.play().catch(() => {
+    document.body.addEventListener("click", () => {
+      bgMusic.play();
+    }, { once: true });
+  });
+
+  // Play instruction audio, and on failure, allow user to start it on click
+  audioInstruction.play().catch(() => {
+    document.body.addEventListener("click", () => {
+      audioInstruction.play();
+    }, { once: true });
+  });
+
+  // Always stop audio_instruction.mp3 on first user interaction
+  document.body.addEventListener("click", () => {
+    audioInstruction.pause();
+    audioInstruction.currentTime = 0;
+  }, { once: true });
+
+  createBubbles();
+});
+
+
+  // --- Fade transition variables for demo image swiper ---
+let fadeAlpha = 0;
+let fadingIn = true;
+// --- Demo Image Auto-Swiper ---
+const demoImages = ["demo1.jpg", "demo2.jpg", "demo3.jpg"]; // adjust path if needed
+let demoIndex = 0;
+let demoTimer;
+// Store draw position and dimensions for consistent rendering
+let drawWidth, drawHeight, offsetX, offsetY;
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let image = new Image();
+let originalSrc = "";
+let history = [];
+let cropBox = null;
+let isCropping = false;
+let isCropModeReady = false;
+let startX = 0, startY = 0;
+
+document.getElementById("upload").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    // Stop demo swiper if running
+    if (demoTimer) {
+      clearInterval(demoTimer);
+      demoTimer = null;
+    }
+    image.onload = () => {
+      const maxSize = 600;
+      const ratio = image.width / image.height;
+
+      if (ratio > 1) {
+        drawWidth = maxSize;
+        drawHeight = maxSize / ratio;
+      } else {
+        drawHeight = maxSize;
+        drawWidth = maxSize * ratio;
+      }
+
+      canvas.width = maxSize;
+      canvas.height = maxSize;
+
+      offsetX = (canvas.width - drawWidth) / 2;
+      offsetY = (canvas.height - drawHeight) / 2;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+      originalSrc = reader.result;
+      saveState();
+    };
+    image.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+function saveState() {
+  history.push(canvas.toDataURL());
+  if (history.length > 30) history.shift();
+}
+
+
+
+function undo() {
+  // Undo to previous step in history stack
+  if (history.length <= 1) return;
+
+  history.pop();
+  loadFromData(history[history.length - 1]);
+}
+
+
+
+function loadFromData(dataUrl) {
+  const img = new Image();
+  img.onload = () => {
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+  };
+  img.src = dataUrl;
+}
+
+
+// --- Updated Crop Tool Functions ---
+function startCrop() {
+  // Stop demo swiper if active
+  if (demoTimer) {
+    clearInterval(demoTimer);
+    demoTimer = null;
+    originalSrc = canvas.toDataURL();
+  }
+  if (isCropping || isCropModeReady) return;
+
+  // Reset previous crop state
+  cancelCrop(); // removes any prior listeners and clears overlay
+  isCropModeReady = true;
+
+  // Redraw original image before starting crop
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+
+  // Overlay dim background to indicate crop mode
+  ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  canvas.style.cursor = "crosshair";
+
+  canvas.addEventListener("mousedown", beginCrop);
+  canvas.addEventListener("mousemove", previewCrop);
+  canvas.addEventListener("mouseup", endCrop);
+}
+
+function beginCrop(e) {
+  const rect = canvas.getBoundingClientRect();
+  startX = e.clientX - rect.left;
+  startY = e.clientY - rect.top;
+
+  isCropping = true;
+  cropBox = null;
+}
+
+function previewCrop(e) {
+  if (!isCropping) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+
+  const currentX = (e.clientX - rect.left) * scaleX;
+  const currentY = (e.clientY - rect.top) * scaleY;
+
+  let x = Math.min(startX, currentX);
+  let y = Math.min(startY, currentY) + 30; // push crop box slightly downward
+  let width = Math.abs(currentX - startX);
+  let height = Math.abs(currentY - startY);
+
+  // Clamp crop box inside image bounds
+  const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
+  const maxX = offsetX + drawWidth;
+  const maxY = offsetY + drawHeight;
+
+  x = clamp(x, offsetX, maxX);
+  y = clamp(y, offsetY, maxY);
+  width = clamp(x + width, offsetX, maxX) - x;
+  height = clamp(y + height, offsetY, maxY) - y;
+
+  cropBox = { x, y, width, height };
+
+  // Redraw image and overlay crop box
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+
+  // Dark overlay outside crop area
+  ctx.save();
+  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+  ctx.beginPath();
+  ctx.rect(0, 0, canvas.width, canvas.height);
+  ctx.rect(cropBox.x, cropBox.y, cropBox.width, cropBox.height);
+  ctx.fill("evenodd");
+  ctx.restore();
+
+  // Draw crop box border and grid
+  ctx.strokeStyle = "white";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cropBox.x, cropBox.y, cropBox.width, cropBox.height);
+
+  const stepX = cropBox.width / 3;
+  const stepY = cropBox.height / 3;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+  ctx.lineWidth = 1;
+
+  for (let i = 1; i < 3; i++) {
+    // vertical grid lines
+    ctx.beginPath();
+    ctx.moveTo(cropBox.x + i * stepX, cropBox.y);
+    ctx.lineTo(cropBox.x + i * stepX, cropBox.y + cropBox.height);
+    ctx.stroke();
+
+    // horizontal grid lines
+    ctx.beginPath();
+    ctx.moveTo(cropBox.x, cropBox.y + i * stepY);
+    ctx.lineTo(cropBox.x + cropBox.width, cropBox.y + i * stepY);
+    ctx.stroke();
+  }
+}
+
+function endCrop(e) {
+  if (!cropBox || !isCropping) return;
+
+  isCropping = false;
+
+  // Create a temporary canvas to store the cropped area
+  const tempCanvas = document.createElement("canvas");
+  const tctx = tempCanvas.getContext("2d");
+
+  tempCanvas.width = cropBox.width;
+  tempCanvas.height = cropBox.height;
+
+  // Draw only the original image (not the overlay/grid) onto the temp canvas
+  tctx.drawImage(
+    image,
+    cropBox.x - offsetX,
+    cropBox.y - offsetY,
+    cropBox.width,
+    cropBox.height,
+    0,
+    0,
+    cropBox.width,
+    cropBox.height
+  );
+
+  // Apply cropped result to main canvas
+  canvas.width = cropBox.width;
+  canvas.height = cropBox.height;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(tempCanvas, 0, 0);
+
+  // Update image to reflect new cropped state
+  image.src = canvas.toDataURL();
+
+  // Update dimensions for download
+  drawWidth = canvas.width;
+  drawHeight = canvas.height;
+  offsetX = 0;
+  offsetY = 0;
+
+  saveState();
+  // Only reset crop mode state, not calling cancelCrop() as it is not needed externally
+  isCropping = false;
+  isCropModeReady = false;
+  canvas.style.cursor = "default";
+  canvas.removeEventListener("mousedown", beginCrop);
+  canvas.removeEventListener("mousemove", previewCrop);
+  canvas.removeEventListener("mouseup", endCrop);
+}
+
+function cancelCrop() {
+  isCropping = false;
+  isCropModeReady = false;
+  canvas.style.cursor = "default";
+
+  // Remove all crop event listeners
+  canvas.removeEventListener("mousedown", beginCrop);
+  canvas.removeEventListener("mousemove", previewCrop);
+  canvas.removeEventListener("mouseup", endCrop);
+
+  // Redraw original image and clear overlays
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+}
+
+function cropAspect(ratio) {
+  if (!image.src) return;
+
+  let iw = image.width;
+  let ih = image.height;
+  const imageAspect = iw / ih;
+  let sx = 0, sy = 0, sw = iw, sh = ih;
+
+  if (imageAspect > ratio) {
+    sw = ih * ratio;
+    sx = (iw - sw) / 2;
+  } else {
+    sh = iw / ratio;
+    sy = (ih - sh) / 2;
+  }
+
+  canvas.width = sw;
+  canvas.height = sh;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  image.src = canvas.toDataURL();
+  saveState();
+}
+
+
+
+// --- Social Media Aspect Ratio Crop ---
+function applyAspectRatio(name) {
+  // Stop demo swiper if active
+  if (demoTimer) {
+    clearInterval(demoTimer);
+    demoTimer = null;
+    originalSrc = canvas.toDataURL(); // set this demo image as editable
+  }
+  if (!image.src || !originalSrc) return;
+
+  const aspectRatios = {
+    "story": 9 / 16,
+    "post": 4 / 5,
+    "square": 1 / 1,
+    "landscape": 16 / 9,
+    "thumbnail": 1.91 / 1
+  };
+
+  const ratio = aspectRatios[name];
+  if (!ratio) return;
+
+  const originalImg = new Image();
+  originalImg.onload = () => {
+    beforeCropSrc = canvas.toDataURL(); // allow undo to restore before aspect crop
+
+    const iw = originalImg.width;
+    const ih = originalImg.height;
+    const imageAspect = iw / ih;
+
+    let sx = 0, sy = 0, sw = iw, sh = ih;
+
+    if (imageAspect > ratio) {
+      sw = ih * ratio;
+      sx = (iw - sw) / 2;
+    } else {
+      sh = iw / ratio;
+      sy = (ih - sh) / 2;
+    }
+
+    const tempCanvas = document.createElement("canvas");
+    const tempCtx = tempCanvas.getContext("2d");
+
+    tempCanvas.width = sw;
+    tempCanvas.height = sh;
+    tempCtx.drawImage(originalImg, sx, sy, sw, sh, 0, 0, sw, sh);
+
+    const maxSize = 600;
+    let drawW, drawH;
+    if (sw / sh > 1) {
+      drawW = maxSize;
+      drawH = maxSize / (sw / sh);
+    } else {
+      drawH = maxSize;
+      drawW = maxSize * (sw / sh);
+    }
+
+    canvas.width = maxSize;
+    canvas.height = maxSize;
+
+    offsetX = (maxSize - drawW) / 2;
+    offsetY = (maxSize - drawH) / 2;
+    drawWidth = drawW;
+    drawHeight = drawH;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(tempCanvas, 0, 0, sw, sh, offsetX, offsetY, drawW, drawH);
+
+    image.src = canvas.toDataURL();
+    saveState();
+  };
+
+  originalImg.src = originalSrc;
+}
+
+// --- Setup Aspect Ratio Buttons and Start Demo Swiper ---
+window.addEventListener("DOMContentLoaded", () => {
+  startDemoSwiper(); // always start on load
+
+  // Bind aspect ratio buttons
+  document.querySelectorAll(".preset-toolbar button").forEach(button => {
+    button.addEventListener("click", () => {
+      applyAspectRatio(button.textContent.toLowerCase().split(" ")[0]); // extract name like 'story'
+    });
+  });
+});
+
+function startDemoSwiper() {
+  if (demoTimer) clearInterval(demoTimer);
+
+  function loadDemoImage() {
+    image = new Image();
+    image.onload = () => {
+      const maxSize = 600;
+      const ratio = image.width / image.height;
+      if (ratio > 1) {
+        drawWidth = maxSize;
+        drawHeight = maxSize / ratio;
+      } else {
+        drawHeight = maxSize;
+        drawWidth = maxSize * ratio;
+      }
+
+      canvas.width = maxSize;
+      canvas.height = maxSize;
+      offsetX = (canvas.width - drawWidth) / 2;
+      offsetY = (canvas.height - drawHeight) / 2;
+
+      // --- Ensure demo images respond to cropping/aspect logic like uploads ---
+      originalSrc = demoImages[demoIndex]; // update the reference for aspect cropping
+      drawWidth = image.width;
+      drawHeight = image.height;
+      offsetX = (canvas.width - drawWidth) / 2;
+      offsetY = (canvas.height - drawHeight) / 2;
+      saveState();
+      // --- end ensure cropping/aspect logic ---
+
+      // --- Smooth left-to-right transition between previous and current image ---
+      let previousImage = new Image();
+      previousImage.src = canvas.toDataURL(); // snapshot of current canvas before new image
+
+      let progress = 0;
+      const steps = 30;
+
+      function animateSlide() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const t = progress / steps;
+        const ease = 0.5 - Math.cos(t * Math.PI) / 2;
+        const offset = ease * canvas.width;
+
+        // Slide out previous image to the right
+        if (previousImage) {
+          ctx.drawImage(previousImage, offsetX + offset, offsetY, drawWidth, drawHeight);
+        }
+
+        // Slide in new image from the left
+        ctx.drawImage(image, offsetX + offset - canvas.width, offsetY, drawWidth, drawHeight);
+
+        if (progress < steps) {
+          progress++;
+          requestAnimationFrame(animateSlide);
+        }
+      }
+      animateSlide();
+    };
+    image.src = demoImages[demoIndex];
+    demoIndex = (demoIndex + 1) % demoImages.length;
+  }
+
+  loadDemoImage();
+  demoTimer = setInterval(loadDemoImage, 2000); // every 2 sec
+}
+
+
+function downloadImage() {
+  // Create a new canvas to capture only the current image
+  const tempCanvas = document.createElement("canvas");
+  const tempCtx = tempCanvas.getContext("2d");
+  tempCanvas.width = canvas.width;
+  tempCanvas.height = canvas.height;
+
+  // Render the current canvas content (image and edits, excluding overlays)
+  const baseImage = new Image();
+  baseImage.onload = () => {
+    tempCtx.drawImage(baseImage, 0, 0);
+    const link = document.createElement("a");
+    link.download = "edited-image.png";
+    link.href = tempCanvas.toDataURL("image/png");
+    link.click();
+  };
+  baseImage.src = canvas.toDataURL();
+}
+
+</script>
+
+
+<!-- Style -->
+<style>
+  * {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: Arial, Helvetica, sans-serif;
+  
+}
+
+
+#av-wrapper {
+  /* border: 5px solid red; */
+  width: 100%;
+  height: 100%;
+  max-width: calc(100vh * 9 / 16);
+  aspect-ratio: 9 / 16;
+  background: transparent;
+  position: relative;
+  overflow: hidden;
+  margin: auto;
+  
+}
+
+
+
+.toolbar.preset-toolbar {
+  margin-bottom: 92px;
+}
+
+
+
+@media (max-width: 400px) {
+  #av-wrapper {
+    max-width: 90vw;
+  }
+}
+  
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: 'Segoe UI', Tahoma, sans-serif;
+}
+
+body {
+  background-color: #121212;
+  color: #f1f1f1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+}
+
+.app-container {
+  width: 100%;
+  max-width: 430px;
+  aspect-ratio: 9 / 16;
+  background: linear-gradient(135deg, #feda75, #fa7e1e, #d62976, #962fbf, #4f5bd5);
+  box-shadow: 0 0 20px rgba(0,0,0,0.4);
+  padding: 52px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.top-toolbar {
+  justify-content: space-between;
+}
+
+.canvas-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+}
+
+canvas {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 10px;
+  border:  2px solid rgba(255, 255, 255, 0.655);
+  background-color: #1f2227;
+  background-image: 
+    linear-gradient(45deg, #2a2d34 25%, transparent 25%),
+    linear-gradient(-45deg, #2a2d34 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #2a2d34 75%),
+    linear-gradient(-45deg, transparent 75%, #2a2d34 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+  width: 100%;
+  height: auto;
+  transform-origin: top;
+}
+
+@media (max-height: 700px) {
+  canvas {
+    transform: scale(0.9);
+  }
+}
+
+@media (max-height: 600px) {
+  canvas {
+    transform: scale(0.75);
+  }
+}
+
+button, input[type="file"] {
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  background-color: #333;
+  
+  color: #f1f1f1;
+  border: 1px solid #555;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+button:hover, input[type="file"]:hover {
+  background-color: rgba(255, 255, 255, 0.352);
+}
+
+button:focus, input:focus {
+  outline: none;
+  border-color: #00bfff;
+  box-shadow: 0 0 0 2px rgba(0,191,255,0.4);
+}
+
+.toolbar.action-toolbar {
+  background-color: transparent;
+  padding: 10px 0px;
+  border-radius: 0;
+  justify-content: center;
+  gap: 15px;
+  width: 100%;
+  margin-top: -4px;
+}
+
+
+
+
+.toolbar.action-toolbar button {
+  background-color: #007bff;
+  color: white;
+  border-color: #007bff;
+  padding: 12px 20px;
+  font-size: .9em;
+  animation: toolbarEntrance 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes toolbarEntrance {
+  0% {
+    transform: scale(0.95) rotate(-3deg);
+  }
+  100% {
+    transform: scale(1.05) rotate(3deg);
+  }
+}
+
+
+
+.toolbar.action-toolbar button:hover {
+  background-color: #0069d9;
+  border-color: #0062cc;
+}
+
+.toolbar.action-toolbar button:focus {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5);
+}
+
+
+:root {
+  --button-bg:  rgba(255, 255, 255, 0.15);
+  
+  --button-hover-bg: #444;
+  --button-border: 1.8px solid rgba(255, 255, 255, 0.3);
+  --button-primary: #007bff;
+  --button-primary-hover: #0069d9;
+}
+
+button, input[type="file"] {
+  background-color: var(--button-bg);
+  border-color: var(--button-border);
+}
+</style>
